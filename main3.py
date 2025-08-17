@@ -160,6 +160,13 @@ class imageProcessing():
             filename = f"{file[:-5]}_ss"
         else:
             filename = f"{file[:-15]}_ss"
+            dataFile = "time,radius,xPos,yPos\n"
+            dataFile += file[0:4]+"-"+file[4:6]+"-"+file[6:8]+"T"+file[9:11]+":"+file[11:13]+":"+file[13:15]+f",{self.model.params[2]},{self.model.params[1]},{self.model.params[0]}\n"
+            
+            # Writing the dates and times to a text file
+            textFile = open(f"data/{file[:-15]}.csv", "w")
+            textFile.write(str(dataFile))
+            textFile.close()
         
         self.plotting(ssCoords, bounds, filename)
         ssCoords = pd.DataFrame(ssCoords, index=ssCoords[:,2].astype(int), columns = ["x","y","t","xE","yE"])
@@ -259,7 +266,7 @@ class measurement():
         lons = []
         lonsE = []
         dats = []
-
+        
         # Calculating the heliographic latitudes and longitudes
         for date in dates:
             lat, lon, dat = measurement().analyse(date, sunspot)
@@ -308,13 +315,14 @@ class measurement():
         self.sunNorthV = np.array([0,1])
         
         ssCoordDF = pd.read_csv(f"data/{date}_ss.csv", index_col=0)
+        data = pd.read_csv(f"data/{date}.csv")
         
         # Setting the centre coordinates of the sun's disc for translation
-        xTrans = 513
-        yTrans = 513
+        translation = data.loc[0,["xPos", "yPos"]].to_numpy()
         
         # Translating the sunspot coordinates
         self.sunspotV = ssCoordDF.loc[ssIndex,["x","y"]].to_numpy()
+        self.sunspotV = self.sunspotV - translation
         
         # Error in sunspot array
         self.sunspotVErr = np.array([2, 2])
@@ -322,7 +330,7 @@ class measurement():
         self.error = posE
         
         # Setting the sun's radius
-        self.radius = 395
+        self.radius = data.radius[0]
         
         # Pulling the julian date
         self.date = time2JulDate(date[0:4]+"-"+date[4:6]+"-"+date[6:8]+"T"+date[9:11]+":"+date[11:13]+":"+date[13:15])
@@ -506,6 +514,8 @@ class measurement():
         
 measurement().initialise("ss2")
 
-# files = [f for f in listdir("imageSets/SDO") if isfile(join("imageSets/SDO", f))]
+# files = [f for f in listdir("../imageSets/SDO") if isfile(join("../imageSets/SDO", f))]
 # files.sort()
-# imageProcessing().sunspotLocator("20250813_031038_1024_HMII.fits", "SDO", dataType="A", threshold = 0.9, high = 6, low = 5)
+# # for file in files[12:]:
+# file = "20250811_211038_1024_HMII.fits"
+# imageProcessing().sunspotLocator(file, "SDO", dataType="A", threshold = 0.9, high = 6, low = 5)
