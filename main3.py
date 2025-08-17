@@ -252,7 +252,7 @@ class imageProcessing():
 
 class measurement():
     
-    def initialise(self, sunspot):
+    def initialise(self, sunspot, verbose = False):
         
         self.sunspot = sunspot
         
@@ -269,7 +269,7 @@ class measurement():
         
         # Calculating the heliographic latitudes and longitudes
         for date in dates:
-            lat, lon, dat = measurement().analyse(date, sunspot)
+            lat, lon, dat = measurement().analyse(date, sunspot, verbose)
             lats.append(lat[0])
             latsE.append(lat[1])
             lons.append(lon[0])
@@ -278,9 +278,12 @@ class measurement():
         dats = np.array(dats)
         
         # Plotting the data
-        self.plotting(lats, lons, latsE, lonsE, dats)
+        fit = self.plotting(lats, lons, latsE, lonsE, dats)
+        
+        print(f"Rotational Period: {360/fit.slope} +/- {(360/fit.slope**2)*fit.stderr}")
+        print(f"Average Latitude: {np.mean(lats).round(3)} +/- {(np.mean(latsE)).round(3)}")
     
-    def analyse(self, date, sunspot):
+    def analyse(self, date, sunspot, verbose):
         # Reading the file containing sunspot positions
         self.sunspotDF = pd.read_csv(f"data/{sunspot}.csv", index_col=0).loc[date]
         
@@ -293,7 +296,7 @@ class measurement():
         # Checking which function to call for dataset type
             # Data taken through telescope
         if self.sunspotDF.type == "T":
-            self.coordinateRotation(date)
+            self.coordinateRotation(date, verbose)
             return self.latitude, self.longitude, self.date
             
             # Data taken from the SDO archive
@@ -338,7 +341,7 @@ class measurement():
         # Converting to heliographic coordinates
         self.heliographicConversion()
         
-    def coordinateRotation(self,date):
+    def coordinateRotation(self, date, verbose):
         
         # Pulling information from the datafile
         ssIndex = self.sunspotDF.sunspot
@@ -375,10 +378,11 @@ class measurement():
         motionIntercept = 0
         motionInterceptErr = np.sqrt((motionSlope * posE)**2 + posE**2)
         
-        # Plotting the motion of the sun across the field of view
-        plot = plotter()
-        plot.defaultScatter([xPos, yPos], ["x Position", "y Position"])
-        plot.plot([xPos, xPos*motionSlope+motionIntercept])
+        if verbose == True:
+            # Plotting the motion of the sun across the field of view
+            plot = plotter()
+            plot.defaultScatter([xPos, yPos], ["x Position", "y Position"])
+            plot.plot([xPos, xPos*motionSlope+motionIntercept])
 
         # Calculating a vector pointing north, perpendicular to the apparent motion of the sun
         northSlope, northSlopeErr = (-1/motionSlope), ((1/motionSlope**2)*motionSlopeErr)
@@ -509,8 +513,7 @@ class measurement():
         lonplot.defaultScatter([dates, longitude], ["Julian Date", "Longitude"])
         lonplot.ax.ticklabel_format(useOffset=False, style="plain")
         
-        print(f"Rotational Period: {360/fit.slope} +/- {(360/fit.slope**2)*fit.stderr}")
-        print(f"Latitude: {np.mean(latitude)} +/- {np.mean(latE)}")
+        return fit
         
 measurement().initialise("ss2")
 
