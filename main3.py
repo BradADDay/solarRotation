@@ -40,7 +40,7 @@ def binarize(image, threshold):
 
 class imageProcessing():
     
-    def imageSequence(self, date, threshold = 0.2, path="imageSets", radBounds = [950,1150]):
+    def imageSequence(self, date, threshold = 0.2, path="../imageSets", radBounds = [950,1150]):
         """Initialises the analysis of a sequence of images"""
         # Finding all of the image file names taken on the date
         files = [f for f in listdir(f"{path}/{date}") if isfile(join(f"{path}/{date}", f))]
@@ -113,7 +113,7 @@ class imageProcessing():
             
             print("Success")
     
-    def sunspotLocator(self, file, subfolder, path = "imageSets", high=9, low=8, threshold=0.9, dataType = "T"):
+    def sunspotLocator(self, file, subfolder, path = "../imageSets", high=9, low=8, threshold=0.9, dataType = "T"):
         """Uses image processing routines to increase the contrast of sunspots and pull their coordinates"""
         # Reading the image file and converting it to a numpy array of brigtness values
         if dataType == "T":
