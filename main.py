@@ -34,6 +34,49 @@ def binarize(image, threshold):
     """Makes a binary image based on a brightness threshold"""
     return np.float32(image > threshold)
 
+def weightedMean(coords, weights):
+    
+    weightedCoords = []
+    weight = []
+    
+    for coord in coords:
+        weightedCoords.append(coord * weights[coord[0]][coord[1]])
+        weight.append(weights[coord[0]][coord[1]])
+    weightedCoords = np.array(weightedCoords)
+        
+    xMean = np.sum(weightedCoords[:,0])/np.sum(weight)
+    yMean = np.sum(weightedCoords[:,1])/np.sum(weight)
+    xE = np.sqrt(np.sum(coords[:,0]-xMean) **2 / len(coords)) / np.sqrt(len(coords))
+    yE = np.sqrt(np.sum(coords[:,1]-yMean) **2 / len(coords)) / np.sqrt(len(coords))
+    
+    return xMean, yMean, xE, yE
+
+def isAdjacent(a1, a2):
+    
+    a1 = np.array(a1).T
+    adjacent=False
+    i=0
+    
+    while i <= len(a1[0])-1:
+        x,y = a1[0][i], a1[1][i]
+        
+        if a2[(a2 == (x+1,y)).all(axis=1)].size>0:
+            adjacent = True
+        elif a2[(a2 == (x-1,y)).all(axis=1)].size>0:
+            adjacent = True
+        elif a2[(a2 == (x,y+1)).all(axis=1)].size>0:
+            adjacent = True
+        elif a2[(a2 == (x,y-1)).all(axis=1)].size>0:
+            adjacent = True
+            
+        if adjacent == True:
+            break
+        
+        i += 1
+    
+    return adjacent
+    
+
 # =============================================================================
 # Image Processing
 # =============================================================================
@@ -113,15 +156,56 @@ class imageProcessing():
             
             print("Success")
     
+    def sdoData(self, subfolder, path = "../imageSets/SDO", high=11, low=3, threshold=0.9, clusters = 50):
+        
+        # Finding all of the image file names taken on the date
+        files = [f for f in listdir(f"{path}/{subfolder}") if isfile(join(f"{path}/{subfolder}", f))]
+        files.sort()
+        
+        for file in files:
+            print(f"{file}...")
+            self.image = fits.getdata(f"{path}/{subfolder}/{file}")
+            
+            if self.image.shape[0] == 3:
+                self.image = color.rgb2gray(self.image, channel_axis=0)
+            
+            # Increasing the contrast and binarizing the image, then fitting a circle to crop it
+            image, radius, bounds = self.contrast(self.image, high, low, threshold)
+            x = []
+            y = []
+            
+            # Storing the dark pixels as coordinates
+            for i in range(len(image)):
+                for j in range(len(image)):
+                    if image[i][j] == 0:
+                        x.append(j)
+                        y.append(i)
+                        
+            # Translating the coordinates to get their positions on the uncropped image
+            binaryX = np.array(x) + bounds[0]
+            binaryY = np.array(y) + bounds[2]
+            data = np.array([binaryX, binaryY])
+            
+            ssCoords = self.clusteringCoM(data, clusters)
+            
+            filename = f"{file[:-15]}_ss"
+            dataFile = "time,radius,xPos,yPos\n"
+            dataFile += file[0:4]+"-"+file[4:6]+"-"+file[6:8]+"T"+file[9:11]+":"+file[11:13]+":"+file[13:15]+f",{self.model.params[2]},{self.model.params[1]},{self.model.params[0]}\n"
+            
+            # Writing the dates and times to a text file
+            textFile = open(f"data/{file[:-15]}.csv", "w")
+            textFile.write(str(dataFile))
+            textFile.close()
+            
+            self.plotting(ssCoords, bounds, filename)
+            ssCoords = pd.DataFrame(ssCoords, index=ssCoords[:,2].astype(int), columns = ["x","y","t","xE","yE"])
+            ssCoords.to_csv(f"data/{filename}.csv")
+    
     def sunspotLocator(self, file, subfolder, path = "../imageSets", high=9, low=8, threshold=0.9, dataType = "T"):
         """Uses image processing routines to increase the contrast of sunspots and pull their coordinates"""
         # Reading the image file and converting it to a numpy array of brigtness values
-        if dataType == "T":
-            self.image = color.rgb2gray(fits.getdata(f"{path}/{subfolder}/{file}"), channel_axis=0)
-        else:
-            print(subfolder, file)
-            self.image = fits.getdata(f"{path}/{subfolder}/{file}")
-        
+        self.image = color.rgb2gray(fits.getdata(f"{path}/{subfolder}/{file}"), channel_axis=0)
+            
         # Increasing the contrast and binarizing the image, then fitting a circle to crop it
         image, radius, bounds = self.contrast(self.image, high, low, threshold)
         x = []
@@ -139,46 +223,42 @@ class imageProcessing():
         binaryY = np.array(y) + bounds[2]
         data = np.array([binaryX, binaryY])
         
-        # Applying gaussian mixture to cluster the data and isolate each sunspot
-        clusters = int(input("How many sunspots are there?: "))
-        clusteredX, clusteredY, uniqueIndices, clusterIndices = self.gaussMix(data.T, clusters)
-        
-        ssCoords = []
-        
-        # Taking the centre of mass of each sunspot and storing to an array
-        for i in range(len(clusteredX)):
-            sunspotX = np.array(clusteredX[i]).mean()
-            sunspotXE = np.sqrt(np.array(clusteredX[i]).var())
-            sunspotY = np.array(clusteredY[i]).mean()
-            sunspotYE = np.sqrt(np.array(clusteredY[i]).var())
-            ssCoords.append([sunspotX, sunspotY, int(uniqueIndices[i]), sunspotXE, sunspotYE])
-        ssCoords = np.array(ssCoords)
-        print(ssCoords)
+        ssCoords = self.clusteringCoM(data)
         
         # Plotting the final coordinates and saving the data as a csv
-        if dataType == "T":
-            filename = f"{file[:-5]}_ss"
-        else:
-            filename = f"{file[:-15]}_ss"
-            dataFile = "time,radius,xPos,yPos\n"
-            dataFile += file[0:4]+"-"+file[4:6]+"-"+file[6:8]+"T"+file[9:11]+":"+file[11:13]+":"+file[13:15]+f",{self.model.params[2]},{self.model.params[1]},{self.model.params[0]}\n"
-            
-            # Writing the dates and times to a text file
-            textFile = open(f"data/{file[:-15]}.csv", "w")
-            textFile.write(str(dataFile))
-            textFile.close()
+        filename = f"{file[:-5]}_ss"
         
         self.plotting(ssCoords, bounds, filename)
         ssCoords = pd.DataFrame(ssCoords, index=ssCoords[:,2].astype(int), columns = ["x","y","t","xE","yE"])
         ssCoords.to_csv(f"data/{filename}.csv")
+        
+    def clusteringCoM(self, data, clusters):
+        
+        # Applying gaussian mixture to cluster the data and isolate each sunspot
+        clusteredX, clusteredY, uniqueIndices, clusterIndices = self.gaussMix(data.T, clusters)
+        ssCoords = []
+        
+        # Taking the centre of mass of each sunspot and storing to an array
+        for i in range(len(clusteredX)):
+            coords = np.array((clusteredX[i], clusteredY[i])).T
+            
+            sunspotX, sunspotY, sunspotXE, sunspotYE = weightedMean(coords, self.image)
+            ssCoords.append([sunspotX, sunspotY, int(uniqueIndices[i]), sunspotXE, sunspotYE])
+        
+        return np.array(ssCoords)
         
     def contrast(self, image, high, low, threshold):
         """Increasing the contrast of the image"""
         # Filtering to find regions with a fast change in intensity and binarizing
         
         image = filters.difference_of_gaussians(image, low, high)
+        plot = plotter()
+        plot.imshow(image)
         image = exposure.rescale_intensity(image, (image.min(), image.max()), (0,1))
         image = binarize(image, threshold*image.mean())
+        
+        plot = plotter()
+        plot.imshow(image)
         
         self.circleFitting(image, check = False)
         
@@ -187,7 +267,6 @@ class imageProcessing():
     def cropping(self, image):
         """Cropping the image to reduce computation"""
         radius = int(self.model.params[2])
-        print(self.model.params)
         
         # Calculating the bounding box limits of the sun
         boundsX = [int(self.model.params[1] - radius), int(self.model.params[1] + radius)]
@@ -213,19 +292,45 @@ class imageProcessing():
     def gaussMix(self, dataFrame, clusters):
         """Clustering the data to isolate the sunspots"""
         # Clustering
-        gaussMix = sk.mixture.GaussianMixture(clusters, random_state=0).fit(dataFrame)
+        gaussMix = sk.mixture.GaussianMixture(clusters, random_state=0, init_params="k-means++").fit(dataFrame)
         # Taking the Indices and creating a list of the unique values
         clusterIndices = gaussMix.predict(dataFrame)
-        uniqueIndices = np.unique(clusterIndices)
+        touching = True
         
-        # Creating lists for storage
-        clusteredX = []
-        clusteredY = []
-        
+        while touching == True:
+            
+            # Creating lists for storage
+            clusteredX = []
+            clusteredY = []
+            
+            adjacent = []
+            
+            for i in range(clusters):
+                for j in range(i+1,clusters):
+                    
+                    if i == j: pass
+                    
+                    else:
+                        cl1 = dataFrame[(clusterIndices==i)]
+                        cl2 = dataFrame[(clusterIndices==j)]
+                        
+                        if isAdjacent(cl1, cl2):
+                            adjacent.append([i,j])
+            
+            if len(adjacent) == 0:
+                touching = False
+                
+            else:
+                for pair in adjacent:
+                    clusterIndices[clusterIndices == pair[0]] = pair[1]
+                
         # Grouping the data in 2D arrays based on its cluster
-        for cluster in uniqueIndices:
-            clusteredX.append(dataFrame[np.where(clusterIndices == cluster),0])
-            clusteredY.append(dataFrame[np.where(clusterIndices == cluster),1])
+        for cluster in np.unique(clusterIndices):
+            if cluster in clusterIndices:
+                clusteredX.append(dataFrame[(clusterIndices == cluster),0])
+                clusteredY.append(dataFrame[(clusterIndices == cluster),1])
+        
+        uniqueIndices = np.arange(0,len(clusteredX))
         
         return clusteredX, clusteredY, uniqueIndices, clusterIndices
             
@@ -515,10 +620,5 @@ class measurement():
         
         return fit
         
-measurement().initialise("ss2")
-
-# files = [f for f in listdir("../imageSets/SDO") if isfile(join("../imageSets/SDO", f))]
-# files.sort()
-# # for file in files[12:]:
-# file = "20250811_211038_1024_HMII.fits"
-# imageProcessing().sunspotLocator(file, "SDO", dataType="A", threshold = 0.9, high = 6, low = 5)
+# measurement().initialise("ss2")
+imageProcessing().sdoData("20240202-20240211", high = 15, low=5)
