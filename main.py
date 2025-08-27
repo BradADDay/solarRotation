@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.stats import linregress
+from scipy.optimize import curve_fit
 import jdcal
 import datetime
 from plottingFunction.plottingFunction import plotter
@@ -35,7 +36,7 @@ def binarize(image, threshold):
     return np.float32(image > threshold)
 
 def weightedMean(coords, weights):
-    
+    """Takes the weighted mean of coordinates"""
     weightedCoords = []
     weight = []
     
@@ -52,7 +53,7 @@ def weightedMean(coords, weights):
     return xMean, yMean, xE, yE
 
 def isAdjacent(a1, a2):
-    
+    """Checks if a1 and a2 have any adjacent pixels"""
     a1 = np.array(a1).T
     adjacent=False
     i=0
@@ -76,6 +77,8 @@ def isAdjacent(a1, a2):
     
     return adjacent
     
+def lin(x, m, c):
+    return m * x + c
 
 # =============================================================================
 # Image Processing
@@ -112,7 +115,7 @@ class imageProcessing():
         
         # Checking what image to use for sunspot location and calling the location function
         fileIndex = int(input("Which file will be used for sunspots?: "))
-        self.sunspotLocator(files[fileIndex], date)
+        self.telData(files[fileIndex], date)
         
         # Writing the dates and times to a text file
         textFile = open(f"data/{files[fileIndex][:-5]}.csv", "w")
@@ -132,6 +135,9 @@ class imageProcessing():
         # Checking if the fit is within expectationbounds
         if check == True:
             self.fitCheck(bImage, [coords.T[1], coords.T[0]], [cc, rr], threshold, radBounds)
+        else:
+            print("Success")
+            return rr, cc
     
     def fitCheck(self, bImage, edges, circle, threshold, radBounds):
         """Checks the circular fit to the data"""
@@ -156,7 +162,7 @@ class imageProcessing():
             
             print("Success")
     
-    def sdoData(self, subfolder, path = "../imageSets/SDO", high=11, low=3, threshold=0.9, clusters = 50):
+    def sdoData(self, subfolder, path = "../imageSets/SDO", high=15, low=5, threshold=0.9, clusters = 50):
         
         # Finding all of the image file names taken on the date
         files = [f for f in listdir(f"{path}/{subfolder}") if isfile(join(f"{path}/{subfolder}", f))]
@@ -168,25 +174,10 @@ class imageProcessing():
             
             if self.image.shape[0] == 3:
                 self.image = color.rgb2gray(self.image, channel_axis=0)
+                
+            self.image = exposure.rescale_intensity(self.image, (self.image.min(), self.image.max()), (0,1))
             
-            # Increasing the contrast and binarizing the image, then fitting a circle to crop it
-            image, radius, bounds = self.contrast(self.image, high, low, threshold)
-            x = []
-            y = []
-            
-            # Storing the dark pixels as coordinates
-            for i in range(len(image)):
-                for j in range(len(image)):
-                    if image[i][j] == 0:
-                        x.append(j)
-                        y.append(i)
-                        
-            # Translating the coordinates to get their positions on the uncropped image
-            binaryX = np.array(x) + bounds[0]
-            binaryY = np.array(y) + bounds[2]
-            data = np.array([binaryX, binaryY])
-            
-            ssCoords = self.clusteringCoM(data, clusters)
+            ssCoords, bounds = self.sunspotLocator(high, low, threshold, clusters)
             
             filename = f"{file[:-15]}_ss"
             dataFile = "time,radius,xPos,yPos\n"
@@ -201,11 +192,21 @@ class imageProcessing():
             ssCoords = pd.DataFrame(ssCoords, index=ssCoords[:,2].astype(int), columns = ["x","y","t","xE","yE"])
             ssCoords.to_csv(f"data/{filename}.csv")
     
-    def sunspotLocator(self, file, subfolder, path = "../imageSets", high=9, low=8, threshold=0.9, dataType = "T"):
+    def telData(self, file, subfolder, path = "../imageSets", high=9, low=8, threshold=0.9, clusters = 50):
         """Uses image processing routines to increase the contrast of sunspots and pull their coordinates"""
         # Reading the image file and converting it to a numpy array of brigtness values
         self.image = color.rgb2gray(fits.getdata(f"{path}/{subfolder}/{file}"), channel_axis=0)
-            
+        self.image = exposure.rescale_intensity(self.image, (self.image.min(), self.image.max()), (0,1))
+        
+        ssCoords, bounds = self.sunspotLocator(high, low, threshold, clusters)
+        
+        # Plotting the final coordinates and saving the data as a csv
+        filename = f"{file[:-5]}_ss"
+        self.plotting(ssCoords, bounds, filename)
+        ssCoords = pd.DataFrame(ssCoords, index=ssCoords[:,2].astype(int), columns = ["x","y","t","xE","yE"])
+        ssCoords.to_csv(f"data/{filename}.csv")
+
+    def sunspotLocator(self, high, low, threshold, clusters):
         # Increasing the contrast and binarizing the image, then fitting a circle to crop it
         image, radius, bounds = self.contrast(self.image, high, low, threshold)
         x = []
@@ -223,34 +224,30 @@ class imageProcessing():
         binaryY = np.array(y) + bounds[2]
         data = np.array([binaryX, binaryY])
         
-        ssCoords = self.clusteringCoM(data)
-        
-        # Plotting the final coordinates and saving the data as a csv
-        filename = f"{file[:-5]}_ss"
-        
-        self.plotting(ssCoords, bounds, filename)
-        ssCoords = pd.DataFrame(ssCoords, index=ssCoords[:,2].astype(int), columns = ["x","y","t","xE","yE"])
-        ssCoords.to_csv(f"data/{filename}.csv")
-        
+        return self.clusteringCoM(data, clusters), bounds
+
     def clusteringCoM(self, data, clusters):
         
         # Applying gaussian mixture to cluster the data and isolate each sunspot
-        clusteredX, clusteredY, uniqueIndices, clusterIndices = self.gaussMix(data.T, clusters)
+        clusteredX, clusteredY, uniqueIndices = self.gaussMix(data.T, clusters)
         ssCoords = []
         
-        # Taking the centre of mass of each sunspot and storing to an array
+        # Taking the weighted centre of mass of each sunspot and storing to an array
         for i in range(len(clusteredX)):
             coords = np.array((clusteredX[i], clusteredY[i])).T
             
-            sunspotX, sunspotY, sunspotXE, sunspotYE = weightedMean(coords, self.image)
+            # Taking the weighted mean of the pixels weighing by their darkness values
+            sunspotX, sunspotY, sunspotXE, sunspotYE = weightedMean(coords, 1-self.image)
             ssCoords.append([sunspotX, sunspotY, int(uniqueIndices[i]), sunspotXE, sunspotYE])
         
         return np.array(ssCoords)
         
     def contrast(self, image, high, low, threshold):
         """Increasing the contrast of the image"""
-        # Filtering to find regions with a fast change in intensity and binarizing
+        # Fitting to get a circle perimeter for plotting and data analysis
+        self.cc, self.rr = self.circleFitting(binarize(image, 0.2), check = False)
         
+        # Filtering to find regions with a fast change in intensity and binarizing
         image = filters.difference_of_gaussians(image, low, high)
         plot = plotter()
         plot.imshow(image)
@@ -259,8 +256,6 @@ class imageProcessing():
         
         plot = plotter()
         plot.imshow(image)
-        
-        self.circleFitting(image, check = False)
         
         return self.cropping(image)
         
@@ -281,11 +276,6 @@ class imageProcessing():
             for j in range(len(image)):
                 if (i - radius)**2 + (j - radius)**2 > (0.95*radius)**2:
                     image[i][j] = 1
-        
-        # Plotting the cropped image so user can view sunspots
-        plot = plotter()
-        plot.imshow(image)
-        plt.show()
                     
         return image, radius, bounds
     
@@ -295,16 +285,15 @@ class imageProcessing():
         gaussMix = sk.mixture.GaussianMixture(clusters, random_state=0, init_params="k-means++").fit(dataFrame)
         # Taking the Indices and creating a list of the unique values
         clusterIndices = gaussMix.predict(dataFrame)
-        touching = True
+            
+        # Creating lists for storage
+        clusteredX = []
+        clusteredY = []
         
+        # Checking if any clusters are adjacent to one another and combining if true
+        touching = True
         while touching == True:
-            
-            # Creating lists for storage
-            clusteredX = []
-            clusteredY = []
-            
             adjacent = []
-            
             for i in range(clusters):
                 for j in range(i+1,clusters):
                     
@@ -314,9 +303,11 @@ class imageProcessing():
                         cl1 = dataFrame[(clusterIndices==i)]
                         cl2 = dataFrame[(clusterIndices==j)]
                         
+                        # Checking if the clusters have adjacent pixels
                         if isAdjacent(cl1, cl2):
                             adjacent.append([i,j])
             
+            # Checking if the list of adjacent clusters is empty
             if len(adjacent) == 0:
                 touching = False
                 
@@ -332,7 +323,7 @@ class imageProcessing():
         
         uniqueIndices = np.arange(0,len(clusteredX))
         
-        return clusteredX, clusteredY, uniqueIndices, clusterIndices
+        return clusteredX, clusteredY, uniqueIndices
             
     def plotting(self, ssCoords, bounds, filename):
         """Plotting the image and the sunspot coordinates"""
@@ -349,6 +340,7 @@ class imageProcessing():
         plot.limits(bounds[0],bounds[1],bounds[2],bounds[3])
         plot.invert("y")
         plot.save(f"data/images/{filename}.png")
+        plot.scatter([self.rr,self.cc], c="r")
         plt.show()
 
 # =============================================================================
@@ -357,13 +349,16 @@ class imageProcessing():
 
 class measurement():
     
-    def initialise(self, sunspot, verbose = False):
+    def initialise(self, sunspot, verbose = False, curtail = False):
         
         self.sunspot = sunspot
         
         # Reading the sunspot data file
         df = pd.read_csv(f"data/{sunspot}.csv", index_col=0)
         dates = df.index
+        
+        if curtail != False:
+            dates = dates[curtail[0]:curtail[1]]
         
         # Creating lists for storage
         lats = []
@@ -383,10 +378,11 @@ class measurement():
         dats = np.array(dats)
         
         # Plotting the data
-        fit = self.plotting(lats, lons, latsE, lonsE, dats)
+        params, slopeErr = self.plotting(lats, lons, latsE, lonsE, dats)
         
-        print(f"Rotational Period: {360/fit.slope} +/- {(360/fit.slope**2)*fit.stderr}")
-        print(f"Average Latitude: {np.mean(lats).round(3)} +/- {(np.mean(latsE)).round(3)}")
+        print(f"Rotational Period: {360/params[0]} +/- {(360/params[0]**2)*slopeErr}")
+        latE = np.std(lats)/np.sqrt(len(lats))
+        print(f"Average Latitude: {np.mean(lats).round(3)} +/- {latE}")
     
     def analyse(self, date, sunspot, verbose):
         # Reading the file containing sunspot positions
@@ -439,6 +435,7 @@ class measurement():
         
         # Setting the sun's radius
         self.radius = data.radius[0]
+        self.radiusErr = self.error
         
         # Pulling the julian date
         self.date = time2JulDate(date[0:4]+"-"+date[4:6]+"-"+date[6:8]+"T"+date[9:11]+":"+date[11:13]+":"+date[13:15])
@@ -460,7 +457,8 @@ class measurement():
         data = pd.read_csv(f"data/{date}.csv")
         imgIndex = np.where(data.time == date[0:4]+"-"+date[4:6]+"-"+date[6:8]+"T"+date[9:11]+":"+date[11:13]+":"+date[13:15])[0][0]
         
-        self.radius = np.mean(data.radius)
+        self.radius = data.radius.loc[imgIndex]
+        self.radiusErr = np.sqrt(np.sum(data.radius-self.radius) **2 / len(data.radius)) / np.sqrt(len(data.radius))
         
         # Pulling out the x,y coordinates of the suns disc
         xPos = data.xPos
@@ -549,7 +547,7 @@ class measurement():
         rho = np.sin(ssVectMag / self.radius) - (ssVectMag * self.S) / self.radius
         
         rhoErr1 = ((np.cos(ssVectMagErr / self.radius) - self.S) / self.radius)*ssVectMagErr
-        rhoErr2 = ((self.S * ssVectMag - np.cos(ssVectMag / self.radius) * ssVectMag) / self.radius**2) * self.error
+        rhoErr2 = ((self.S * ssVectMag - np.cos(ssVectMag / self.radius) * ssVectMag) / self.radius**2) * self.radiusErr
         rhoErr = np.linalg.norm([rhoErr1, rhoErr2])
         
         # Calculating the angle between the solar north pole 
@@ -600,25 +598,27 @@ class measurement():
         LL0Err = np.rad2deg(np.sqrt(LL0ErrB**2 + LL0ErrChi**2 + LL0ErrRho**2))
         
         self.longitude = [LL0, LL0Err]
-        self.latitude = [np.deg2rad(B), np.deg2rad(BErr)]
+        self.latitude = [np.rad2deg(B), np.rad2deg(BErr)]
 
     def plotting(self, latitude, longitude, latE, lonE, dates):
         
         # Plotting the latitudes
-        latplot = plotter(title=self.sunspot[4:])
+        latplot = plotter(title=self.sunspot)
         latplot.defaultScatter([dates, latitude], ["Julian Date", "Latitude"])
         latplot.errorbar([dates, latitude], [None, latE])
         
-        fit = linregress(dates, longitude)
+        params, error = curve_fit(lin, dates, longitude, sigma = lonE)
+        slopeErr = np.sqrt(np.diag(error))[0]
         
         # Plotting the longitudes
-        lonplot = plotter(title=self.sunspot[4:])
-        lonplot.errorbar([dates, longitude], [None, lonE])
-        lonplot.plot([dates, dates*fit.slope + fit.intercept])
+        lonplot = plotter(title=self.sunspot)
+        # lonplot.errorbar([dates, longitude], [None, lonE])
+        lonplot.plot([dates, dates*[params[0]] + params[1]])
         lonplot.defaultScatter([dates, longitude], ["Julian Date", "Longitude"])
         lonplot.ax.ticklabel_format(useOffset=False, style="plain")
         
-        return fit
+        return params, slopeErr
         
-# measurement().initialise("ss2")
-imageProcessing().sdoData("20240202-20240211", high = 15, low=5)
+measurement().initialise("ss_20250804-20250815")
+# imageProcessing().sdoData("20250803-20250816")
+# imageProcessing().imageSequence("2025-08-02-00")
