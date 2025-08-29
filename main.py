@@ -12,7 +12,7 @@ from scipy.stats import linregress
 from scipy.optimize import curve_fit
 import jdcal
 import datetime
-from plottingFunction.plottingFunction import plotter
+from bradLib import plotter
 from astropy.io import fits
 from skimage import feature, color, measure, draw, filters, exposure
 from os import listdir
