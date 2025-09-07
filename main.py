@@ -12,12 +12,15 @@ from scipy.stats import linregress
 from scipy.optimize import curve_fit
 import jdcal
 import datetime
-from bradLib import plotter
+from bradLib import plotter, errorPropagate
 from astropy.io import fits
 from skimage import feature, color, measure, draw, filters, exposure
 from os import listdir
 from os.path import isfile, join
 import sklearn as sk
+import sympy as sy
+
+v = sy.vector.CoordSys3D("v")
 
 # =============================================================================
 # Misc Functions
@@ -416,26 +419,26 @@ class measurement():
         # Setting the North Vector
         self.northMag = 1
         self.northMagErr = 0
-        self.sunNorthV = np.array([0,1])
+        self.sunNorthV = v.j * 1
         
         ssCoordDF = pd.read_csv(f"data/{date}_ss.csv", index_col=0)
         data = pd.read_csv(f"data/{date}.csv")
         
         # Setting the centre coordinates of the sun's disc for translation
         translation = data.loc[0,["xPos", "yPos"]].to_numpy()
+        translation = v.i * translation[0] + v.j * translation[1]
         
         # Translating the sunspot coordinates
-        self.sunspotV = ssCoordDF.loc[ssIndex,["x","y"]].to_numpy()
-        self.sunspotV = self.sunspotV - translation
+        sunspotV = ssCoordDF.loc[ssIndex,["x","y"]].to_numpy()
+        sunspotV = v.i * sunspotV[0] + v.j * sunspotV[1]
+        self.sunspotV = sunspotV - translation
         
         # Error in sunspot array
-        self.sunspotVErr = np.array([2, 2])
-        posE = np.linalg.norm(ssCoordDF.loc[ssIndex,["xE","yE"]])
-        self.error = posE
+        self.sunspotVErr = np.linalg.norm(ssCoordDF.loc[ssIndex,["xE","yE"]])
         
         # Setting the sun's radius
         self.radius = data.radius[0]
-        self.radiusErr = self.error
+        self.radiusErr = self.sunspotVErr
         
         # Pulling the julian date
         self.date = time2JulDate(date[0:4]+"-"+date[4:6]+"-"+date[6:8]+"T"+date[9:11]+":"+date[11:13]+":"+date[13:15])
@@ -546,9 +549,10 @@ class measurement():
         # and the projection of the earth's north pole
         rho = np.sin(ssVectMag / self.radius) - (ssVectMag * self.S) / self.radius
         
-        rhoErr1 = ((np.cos(ssVectMagErr / self.radius) - self.S) / self.radius)*ssVectMagErr
-        rhoErr2 = ((self.S * ssVectMag - np.cos(ssVectMag / self.radius) * ssVectMag) / self.radius**2) * self.radiusErr
+        rhoErr1 = ((np.cos(ssVectMag / self.radius) - self.S) / self.radius)*ssVectMagErr
+        rhoErr2 = (((self.S - np.cos(ssVectMag / self.radius)) * ssVectMag) / self.radius**2) * self.radiusErr
         rhoErr = np.linalg.norm([rhoErr1, rhoErr2])
+        print(rho, rhoErr)
         
         # Calculating the angle between the solar north pole 
         # and the sunspot vector
@@ -582,19 +586,17 @@ class measurement():
         
         # Calculating the error in B
         BErrBottom = np.sqrt(1 - (np.cos(self.B0)*np.sin(rho)*np.cos(negativeChi) + np.sin(self.B0)*np.cos(rho))**2)
-        BErrChi = (np.cos(self.B0)*np.sin(rho)*np.cos(negativeChi)*chiErr)/BErrBottom
-        BErrRho = ((np.cos(self.B0)*np.cos(rho)*np.cos(negativeChi) - np.sin(self.B0)*np.sin(rho))*rhoErr)/BErrBottom
+        BErrChi = (-np.sin(chi)*np.sin(rho)*np.cos(self.B0)/BErrBottom) * chiErr
+        BErrRho = ((-np.sin(self.B0)*np.sin(rho) + np.cos(self.B0)*np.cos(chi)*np.cos(rho))/BErrBottom) * rhoErr
         BErr = np.sqrt(BErrChi**2 + BErrRho**2)
         
         # Finding Heliographic Latitude, L-L0
-        inside = np.sin(rho) * np.sin(chi) * (1/np.cos(B))
-        LL0 = np.rad2deg(np.arcsin(inside))
+        LL0 = np.rad2deg(np.arcsin(np.sin(rho) * np.sin(chi) * (1/np.cos(B))))
         
         # Calculating the error in L-L0
-        LL0ErrBottom = np.sqrt(1 - inside**2)
-        LL0ErrB = (inside * np.tan(B) * BErr) / (LL0ErrBottom)
-        LL0ErrChi = (np.sin(rho) * np.cos(chi) * (1 / np.cos(B)) * chiErr) / (LL0ErrBottom)
-        LL0ErrRho = (np.cos(rho) * np.sin(chi) * (1 / np.cos(B)) * rhoErr) / (LL0ErrBottom)
+        LL0ErrB = (np.sin(B)*np.sin(chi)*np.sin(rho)/(np.sqrt(-np.sin(chi)**2*np.sin(rho)**2/np.cos(B)**2 + 1)*np.cos(B)**2)) * BErr
+        LL0ErrChi = (np.sin(rho)*np.cos(chi)/(np.sqrt(-np.sin(chi)**2*np.sin(rho)**2/np.cos(B)**2 + 1)*np.cos(B))) * chiErr
+        LL0ErrRho = (np.sin(chi)*np.cos(rho)/(np.sqrt(-np.sin(chi)**2*np.sin(rho)**2/np.cos(B)**2 + 1)*np.cos(B))) * rhoErr
         LL0Err = np.rad2deg(np.sqrt(LL0ErrB**2 + LL0ErrChi**2 + LL0ErrRho**2))
         
         self.longitude = [LL0, LL0Err]
@@ -612,7 +614,7 @@ class measurement():
         
         # Plotting the longitudes
         lonplot = plotter(title=self.sunspot)
-        # lonplot.errorbar([dates, longitude], [None, lonE])
+        lonplot.errorbar([dates, longitude], [None, lonE])
         lonplot.plot([dates, dates*[params[0]] + params[1]])
         lonplot.defaultScatter([dates, longitude], ["Julian Date", "Longitude"])
         lonplot.ax.ticklabel_format(useOffset=False, style="plain")
