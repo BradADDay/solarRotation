@@ -521,10 +521,10 @@ class measurement():
         
         # The sunspot coordinates rotated such that solar north is vertical
         XxREq = sy.Eq(XxR, Xx*sy.cos(phi)-Xy*sy.sin(phi))
-        XyREq = sy.Eq(XyR, Xx*sy.sin(phi)-Xy*sy.cos(phi))
+        XyREq = sy.Eq(XyR, Xx*sy.sin(phi)+Xy*sy.cos(phi))
         
         calc = errorPropagate.multipleEquations([NsEq, NyEq, NMagEq, psiEq, phiEq, XxREq, XyREq])
-        vals = calc.evalEquations({Ms:motionSlope, Ni:0, Nx:1E5, Xx:ssCoords[0], 
+        vals = calc.evalEquations({Ms:motionSlope, Ni:motionIntercept, Nx:50000, Xx:ssCoords[0], 
                                    Xy:ssCoords[1], P:self.P, MsErr:motionSlopeErr, 
                                    NiErr:motionInterceptErr, NxErr:0, XxErr:error[0], 
                                    XyErr:error[1], PErr:0})
