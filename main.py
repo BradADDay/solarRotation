@@ -100,7 +100,7 @@ def lin(x, m, c):
     return m * x + c
 
 def sinusoid(x, A, w, d):
-    return A*np.sin(w*x + d)
+    return A*np.sin(np.pi*(x-d)/w)
 
 # =============================================================================
 # Image Processing
@@ -471,8 +471,7 @@ class measurement():
         ssCoordDF = pd.read_csv(f"data/{date}_ss.csv", index_col=0)
         
         ssCoords = ssCoordDF.loc[ssIndex,["x","y"]].to_numpy()
-        posE = np.linalg.norm(ssCoordDF.loc[ssIndex,["xE","yE"]])
-        self.error = posE
+        error = ssCoordDF.loc[ssIndex,["xE","yE"]].to_numpy()
         
         data = pd.read_csv(f"data/{date}.csv")
         imgIndex = np.where(data.time == date[0:4]+"-"+date[4:6]+"-"+date[6:8]+"T"+date[9:11]+":"+date[11:13]+":"+date[13:15])[0][0]
@@ -499,53 +498,40 @@ class measurement():
         motionSlopeErr = linFit.stderr
         
         motionIntercept = 0
-        motionInterceptErr = np.sqrt((motionSlope * posE)**2 + posE**2)
+        motionInterceptErr = np.linalg.norm(error)
         
         if verbose == True:
             # Plotting the motion of the sun across the field of view
             plot = plotter()
             plot.defaultScatter([xPos, yPos], ["x Position", "y Position"])
             plot.plot([xPos, xPos*motionSlope+motionIntercept])
-
-        # Calculating a vector pointing north, perpendicular to the apparent motion of the sun
-        northSlope, northSlopeErr = (-1/motionSlope), ((1/motionSlope**2)*motionSlopeErr)
-        northV = [50000, northSlope * 50000 + motionIntercept]
-        northVErr = [posE, np.sqrt((50000*northSlopeErr)**2 + motionInterceptErr**2 + posE**2)]
         
-        # Calculating the magnitude of the north vector and its error
-        northMag = np.linalg.norm(northV)
-        northMagErr1 = northV[0] * northVErr[1] / northMag
-        northMagErr2 = northV[1] * northVErr[1] / northMag
-        northMagErr = np.linalg.norm([northMagErr1, northMagErr2])
+        XxR, Xx, XyR, Xy, phi, psi, P = sy.symbols("X_x_R X_x X_y_R X_y phi psi P")
+        XxRErr, XxErr, XyRErr, XyErr, phiErr, psiErr, PErr = sy.symbols("X_x_R_err X_x_err X_y_R_err X_y_err phi_err psi_err P_err")
+        Ny, Nx, NMag, Ns, Ni, Ms = sy.symbols("N_y N_x N N_s N_i M_s")
+        NyErr, NxErr, NMagErr, NsErr, NiErr, MsErr = sy.symbols("N_y_err N_x_err N_err N_s_err N_i_err M_s_err")
         
-        # Setting attributes to be used for heliographic coordinate conversion
-        self.sunNorthV = np.array([0, northMag])
-        self.sunNorthVErr = np.array([0, northMagErr])
-        self.northMag = northMag
-        self.northMagErr = northMagErr
+        NsEq = sy.Eq(Ns, -1/Ms)
+        NyEq = sy.Eq(Ny, Ns * Nx + Ni)
+        NMagEq = sy.Eq(NMag, sy.sqrt(Nx**2 + Ny**2))
         
-        # Calculating the angle between the north vector and the vertical axis
-        psi = np.arccos(northV[1] / northMag)
-        psiErrSqrt = np.sqrt(1 - (northV[1]/northMag)**2)
-        psiErr = np.sqrt(((northV[1]*northMagErr)/(psiErrSqrt*(northMag**2)))**2 + (northVErr[1]/(psiErrSqrt*northMag))**2)
+        psiEq = sy.Eq(psi, sy.acos(Ny/NMag))
         
-        # Adjusting the angle if it lies on the left side of the y axis
-        if northV[0] <= 0:
-            psi = 2*np.pi - psi
+        phiEq = sy.Eq(phi, psi - P)
         
-        # Rotating such that the rotational axis of the sun is vertical
-        phi = psi - self.P
-        self.phi = phi
+        # The sunspot coordinates rotated such that solar north is vertical
+        XxREq = sy.Eq(XxR, Xx*sy.cos(phi)-Xy*sy.sin(phi))
+        XyREq = sy.Eq(XyR, Xx*sy.sin(phi)-Xy*sy.cos(phi))
         
-        # Rotating the sunspot vector in line with the coordinate system
-        sunspotV = [ssCoords[0]*np.cos(phi)-ssCoords[1]*np.sin(phi), ssCoords[0]*np.sin(phi)+ssCoords[1]*np.cos(phi)]
-        sunspotVEx = (posE*np.cos(phi))**2 + (posE*np.sin(phi))**2 + ((sunspotV[0]*np.sin(phi) - sunspotV[1]*np.cos(phi))*psiErr)**2
-        sunspotVEy = (posE*np.cos(phi))**2 + (posE*np.sin(phi))**2 + ((sunspotV[0]*np.cos(phi) - sunspotV[1]*np.sin(phi))*psiErr)**2
-        sunspotVErr = [np.sqrt(sunspotVEx), np.sqrt(sunspotVEy)]
+        calc = errorPropagate.multipleEquations([NsEq, NyEq, NMagEq, psiEq, phiEq, XxREq, XyREq])
+        vals = calc.evalEquations({Ms:motionSlope, Ni:0, Nx:1E5, Xx:ssCoords[0], 
+                                   Xy:ssCoords[1], P:self.P, MsErr:motionSlopeErr, 
+                                   NiErr:motionInterceptErr, NxErr:0, XxErr:error[0], 
+                                   XyErr:error[1], PErr:0})
         
         # Setting attributes to be used for heliographic conversion
-        self.sunspotV = np.array(sunspotV)
-        self.sunspotVErr = np.array(sunspotVErr)
+        self.sunspotV = np.array([vals[XxR], vals[XyR]])
+        self.sunspotVErr = np.array([vals[XxRErr], vals[XyRErr]])
         
         # Saving the date to return
         self.date = time2JulDate(data.loc[imgIndex, "time"])
@@ -554,28 +540,37 @@ class measurement():
         
     def heliographicConversion(self):
         
+        # Pulling the sunspot vector and solar north vector
         ssV = self.sunspotV
         ssVErr = self.sunspotVErr
-        sunNorthV = self.sunNorthV
         
+        # Setting up sympy symbols for calculations
         XMag, Xx, Xy, XMagErr, XxErr, XyErr = sy.symbols("X, X_x, X_y, X_err, X_x_err, X_y_err")
         chi, chiErr, rho, radius, radErr, S, B0 = sy.symbols("chi chi_err rho r_0 r_0_err S B_0")
         B, LL0, BErr, LL0Err, SErr, B0Err = sy.symbols("B L_L_0 B_err L_L_0_err S_err B_0_err")
         
+        # The magnitude of the sunspot vector, X
         XMagEq = sy.Eq(XMag, sy.sqrt(Xx**2 + Xy**2))
         
+        # The angle between the sunspot and solar north vectors, measured anticlockwise from the latter
+        # if-else statement used to account for when the angle calculated is clockwise
         if ssV[0] >= 0:
             chiEq = sy.Eq(chi, 2*np.pi + sy.acos((Xy)/(XMag)))
         else:
             chiEq = sy.Eq(chi, -sy.acos((Xy)/(XMag)))
         
+        # The angle between solar north and the projection of Earth's north pole
         rhoEq = sy.Eq(rho, sy.sin(XMag / radius) - XMag * S / radius)
+        # The heliographic latitude of the sunspot
         BEq = sy.Eq(B, sy.asin(sy.sin(B0)*sy.cos(rho) + sy.cos(B0)*sy.sin(rho)*sy.cos(chi)))
+        # The heliographic longitude of the sunspot
         LL0Eq = sy.Eq(LL0, sy.asin(sy.sin(rho) * sy.sin(chi) * (1/sy.cos(B))))
         
+        # Setting up the sequence of equations and substituting in the necessary values
         calc = errorPropagate.multipleEquations([XMagEq, chiEq, rhoEq, BEq, LL0Eq], {S:self.S, B0:self.B0, SErr:0, B0Err:0})
         vals=calc.evalEquations({Xx:ssV[0], Xy:ssV[1], XxErr:ssVErr[0], XyErr:ssVErr[1], radius:self.radius, radErr:self.radiusErr})
         
+        # Converting the latitude and longitude to degrees for plotting and return
         self.longitude = [np.rad2deg(float(vals[LL0])), np.rad2deg(float(vals[LL0Err]))]
         self.latitude = [np.rad2deg(float(vals[B])), np.rad2deg(float(vals[BErr]))]
 
@@ -585,10 +580,6 @@ class measurement():
         latplot = plotter(title=self.sunspot)
         latplot.defaultScatter([dates, latitude], ["Julian Date", "Latitude"])
         latplot.errorbar([dates, latitude], [None, latE])
-        
-        df = pd.DataFrame(np.array([dates, longitude]).T)
-        print(df)
-        df.to_csv("test.csv")
         
         # Plotting the longitudes
         lonplot = plotter(title=self.sunspot)
@@ -603,7 +594,10 @@ class measurement():
         if fit == "sin":
             params, error = fit_sin(dates, longitude)
             error = np.sqrt(np.diag(error))
-            slope = params[0] * np.cos(params[1] * 0 + params[2])
+            #-2548213.80197
+            params = [45.18443, 11.67832, 0]
+            slope = params[0] * (np.pi/params[1]) * np.cos(np.pi*(0 - params[2])/params[1])
+            print(slope)
             slopeErr = error[0]
             A, w, d = params
             fitY = sinusoid(dates, A, w, d)
@@ -616,6 +610,6 @@ class measurement():
         return slope, slopeErr
         
 # measurement().initialise("ss_20240202-20240211", fit="lin")
-measurement().initialise("ss_20250804-20250815", fit="sin")
+measurement().initialise("ss_20250804-20250815", fit="lin")
 # imageProcessing().sdoData("20250803-20250816")
 # imageProcessing().imageSequence("2025-08-02-00")
