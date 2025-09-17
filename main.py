@@ -54,7 +54,7 @@ def weightedMean(coords, weights):
     return xMean, yMean, xE, yE
 
 def isAdjacent(a1, a2):
-    """Checks if a1 and a2 have any adjacent pixels"""
+    """Checks if a1 and a2 have any adjacent coordinates"""
     a1 = np.array(a1).T
     adjacent=False
     i=0
@@ -77,7 +77,11 @@ def isAdjacent(a1, a2):
         i += 1
     
     return adjacent
-    
+
+# =============================================================================
+# Fitting Functions
+# =============================================================================
+
 def lin(x, m, c):
     return m * x + c
 
@@ -168,9 +172,9 @@ class imageProcessing():
             # Showing the image with the fit circle
             plot = plotter(title=f"img_{self.i}: {self.file[:-5]}")
             plot.imshow(self.image)
-            plot.scatter([self.model.params[1], self.model.params[0]], s=50, c='red', marker="x")
-            plot.scatter(edges, s=0.05)
-            plot.scatter(circle, s=1, c="r")
+            plot.scatter([self.model.params[1], self.model.params[0]], markerSize=50, colour='red', markerStyle="x")
+            plot.scatter(edges, markerSize=0.05)
+            plot.scatter(circle, markerSize=1, colour="r")
             plot.aspect()
             plot.invert("y")
             plt.show()
@@ -178,7 +182,7 @@ class imageProcessing():
             print("Success")
     
     def sdoData(self, subfolder, path = "../imageSets/SDO", high=15, low=5, threshold=0.9, clusters = 50):
-        
+        """The analysis flow for data taken from the SDO archive"""
         # Finding all of the image file names taken on the date
         files = [f for f in listdir(f"{path}/{subfolder}") if isfile(join(f"{path}/{subfolder}", f))]
         files.sort()
@@ -222,6 +226,7 @@ class imageProcessing():
         ssCoords.to_csv(f"data/{filename}.csv")
 
     def sunspotLocator(self, high, low, threshold, clusters):
+        """Finds regions of dark pixels"""
         # Increasing the contrast and binarizing the image, then fitting a circle to crop it
         image, radius, bounds = self.contrast(self.image, high, low, threshold)
         x = []
@@ -242,7 +247,7 @@ class imageProcessing():
         return self.clusteringCoM(data, clusters), bounds
 
     def clusteringCoM(self, data, clusters):
-        
+        """Clustering the data using gaussian mixture and taking the centre of mass of each cluster"""
         # Applying gaussian mixture to cluster the data and isolate each sunspot
         clusteredX, clusteredY, uniqueIndices = self.gaussMix(data.T, clusters)
         ssCoords = []
@@ -351,11 +356,11 @@ class imageProcessing():
         for i in range(len(ssCoords)):
             coords = ssCoords[i]
             plot.ax.annotate(f'{int(coords[2])}', xy=coords[0:2], textcoords='data')
-            plot.scatter(coords[0:2], s=20, label = int(coords[2]))
+            plot.scatter(coords[0:2], markerSize=20, label = int(coords[2]))
         plot.limits(bounds[0],bounds[1],bounds[2],bounds[3])
         plot.invert("y")
         plot.save(f"data/images/{filename}.png")
-        plot.scatter([self.rr,self.cc], c="r")
+        plot.scatter([self.rr,self.cc], colour="r")
         plt.show()
 
 # =============================================================================
@@ -365,7 +370,7 @@ class imageProcessing():
 class measurement():
     
     def initialise(self, sunspot, verbose = False, curtail = False, fit = "lin", predict=True):
-        
+        """initialises the data processing"""
         self.sunspot = sunspot
         self.sympyEquations()
         
@@ -382,10 +387,12 @@ class measurement():
         lons = []
         lonsE = []
         dats = []
+        ssCoords = []
         
         # Calculating the heliographic latitudes and longitudes
         for date in dates:
-            lat, lon, dat = self.analyse(date, sunspot, verbose)
+            lat, lon, dat, sunspotV = self.analyse(date, sunspot, verbose)
+            ssCoords.append(sunspotV)
             lats.append(lat[0])
             latsE.append(lat[1])
             lons.append(lon[0])
@@ -393,21 +400,18 @@ class measurement():
             dats.append(dat)
         dats = np.array(dats)
         
-        # Plotting the data
-        slope, slopeErr = self.plotting(lats, lons, latsE, lonsE, dats, fit)
-         
-        print(f"Rotational Period: {360/slope} +/- {(360/slope**2)*slopeErr}")
-        latErr = np.std(lats)/np.sqrt(len(lats))
-        lat = np.mean(lats).round(3)
+        plot = plotter()
+        plot.defaultScatter(np.array(ssCoords).T, ["x", "y"])
+        rr, cc = draw.circle_perimeter(0, 0, 100)
+        plot.scatter([rr, cc])
+        plot.aspect()
+        plot.invert("y")
         
-        if predict:
-            omega, omegaErr = self.periodPredict(lat,latErr)
-            print(f"Predicted Period: {omega} +/- {omegaErr}")
-            
-        print(f"Average Latitude: {lat} +/- {latErr}")
+        # Plotting the data
+        self.plotting(lats, lons, latsE, lonsE, dats, fit)
     
     def sympyEquations(self):
-        
+        """Setting up the equations used for coordinate conversion as sympy equations"""
     #==========================================================================
     #   Coordinate Rotation
     #==========================================================================
@@ -449,7 +453,7 @@ class measurement():
         chiEqLesser = sy.Eq(chi, -sy.acos((Xy)/(XMag)))
         
         # The angle between solar north and the projection of Earth's north pole
-        rhoEq = sy.Eq(rho, sy.sin(XMag / radius) - XMag * S / radius)
+        rhoEq = sy.Eq(rho, sy.asin(XMag / radius) - XMag * S / radius)
         # The heliographic latitude of the sunspot
         BEq = sy.Eq(B, sy.asin(sy.sin(B0)*sy.cos(rho) + sy.cos(B0)*sy.sin(rho)*sy.cos(chi)))
         # The heliographic longitude of the sunspot
@@ -458,10 +462,12 @@ class measurement():
         # Setting up the sequence of equations and substituting in the necessary values        
         self.heliographicSymbols = [Xx, Xy, XxErr, XyErr, radius, radErr, LL0Err, LL0, BErr, B, S, SErr, B0, B0Err]
         self.heliographicCalcGreater = errorPropagate.multipleEquations([XMagEq, chiEqGreater, rhoEq, BEq, LL0Eq])
+        
         self.heliographicCalcLesser = errorPropagate.multipleEquations([XMagEq, chiEqLesser, rhoEq, BEq, LL0Eq])
+        self.heliographicCalcLesser.texPrint()
     
     def analyse(self, date, sunspot, verbose):
-        
+        """The analysis function, calls the specific function for each data type and defines constants"""
         # Reading the file containing sunspot positions
         self.sunspotDF = pd.read_csv(f"data/{sunspot}.csv", index_col=0).loc[date]
         
@@ -475,18 +481,20 @@ class measurement():
             # Data taken through telescope
         if self.sunspotDF.type == "T":
             self.telescope(date, verbose)
-            return self.latitude, self.longitude, self.date
+            print(f"Analysing Telescope Data: {date}")
+            return self.latitude, self.longitude, self.date, 100*self.sunspotV/self.radius
             
             # Data taken from the SDO archive
         elif self.sunspotDF.type == "A":
             self.SDO(date)
-            return self.latitude, self.longitude, self.date
+            print(f"Analysing SDO Data:       {date}")
+            return self.latitude, self.longitude, self.date, 100*self.sunspotV/self.radius
         
         else:
             print("Invalid Entry")
         
     def SDO(self, date):
-        
+        """The analysis function for SDO data"""
         # Pulling information from the datafile
         ssIndex = self.sunspotDF.sunspot
         ssCoordDF = pd.read_csv(f"data/{date}_ss.csv", index_col=0)
@@ -513,7 +521,7 @@ class measurement():
         self.heliographicConversion()
         
     def telescope(self, date, verbose):
-        
+        """The analysis function for telescope data"""
     # =============================================================================
     #   Reading datafiles
     # =============================================================================
@@ -545,9 +553,9 @@ class measurement():
     # =============================================================================
 
         # Translating the coordinates of the sun's disc and the sunspot coordinates
-        xPos, yPos = xPos - xTrans, yPos - yTrans
+        xPos, yPos = [xPos - xTrans, yPos - yTrans]
         
-        ssCoords = ssCoords - np.array([xTrans, yTrans])
+        ssCoords -= np.array([xTrans, yTrans])
 
         # Computing a linear fit to the data to find the slope
         linFit = linregress(xPos, yPos)
@@ -555,7 +563,7 @@ class measurement():
         motionIntercept = 0
         motionInterceptErr = np.linalg.norm(error)
         
-        if verbose == True:
+        if verbose:
             # Plotting the motion of the sun across the field of view
             plot = plotter()
             plot.defaultScatter([xPos, yPos], ["x Position", "y Position"])
@@ -582,7 +590,7 @@ class measurement():
         self.heliographicConversion()
         
     def heliographicConversion(self):
-        
+        """The heliographic conversion equations"""
         # Pulling the sunspot vector and solar north vector
         ssV = self.sunspotV
         ssVErr = self.sunspotVErr
@@ -605,46 +613,58 @@ class measurement():
         self.latitude = [np.rad2deg(float(vals[B])), np.rad2deg(float(vals[BErr]))]
 
     def plotting(self, latitude, longitude, latE, lonE, dates, fit):
-        
+        """Plotting the results and fitting either a sinusoid or line"""
         # Plotting the latitudes
-        latplot = plotter(title=self.sunspot)
-        latplot.defaultScatter([dates, latitude], ["Julian Date", "Latitude"])
+        latplot = plotter(title=self.sunspot[3:])
+        latplot.defaultScatter([dates, latitude], ["Julian Date (Days)", "Latitude (Degrees)"])
         latplot.errorbar([dates, latitude], [None, latE])
-        
-        # Plotting the longitudes
-        lonplot = plotter(title=self.sunspot)
-        lonplot.errorbar([dates, longitude], [None, lonE])
+        x = np.linspace(dates.min(), dates.max())
         
         if fit == "lin":
+            # Fitting a straight line
             params, error = curve_fit(lin, dates, longitude, sigma = lonE)
             slopeErr = np.sqrt(np.diag(error))[0]
             slope = params[0]
-            fitY = params[0]*dates + params[1]
+            fitY = params[0]*x + params[1]
         
         elif fit == "sin":
+            # Fitting a sinusoid
             params, error = fit_sin(dates, longitude)
             error = np.sqrt(np.diag(error))
             slope = params[0] * (np.pi/params[1])
             slopeErr = np.sqrt((error[0]*np.pi/params[1])**2 + (params[0]*np.pi*error[1]/(params[1]**2)))
             A, w, d = params
-            fitY = sinusoid(dates, A, w, d)
+            fitY = sinusoid(x, A, w, d)
         
         else:
+            # User inputted values for a sin fit, done outside of the code
             slope = fit[0] * (np.pi/fit[1])
             A, w, d = fit
             fitY = sinusoid(dates, A, w, d)
             slopeErr = 0
             
-        
-        lonplot.plot([dates, fitY])
-        
-        lonplot.defaultScatter([dates, longitude], ["Julian Date", "Longitude"])
+        # Plotting the longitudes and fits
+        lonplot = plotter(title=self.sunspot[3:])
+        lonplot.errorbar([dates, longitude], [None, lonE])
+        lonplot.plot([x, fitY])
+        lonplot.defaultScatter([dates, longitude], ["Julian Date (Days)", "Longitude (Degrees)"])
         lonplot.ax.ticklabel_format(useOffset=False, style="plain")
+        
+        # Printing the predicted and measured periods
+        print(f"\nRotational Period: {(360/slope).round(3)} +/- {((360/slope**2)*slopeErr).round(3)}")
+        latErr = np.std(latitude)/np.sqrt(len(latitude))
+        lat = np.mean(latitude)
+        
+        period, periodErr = self.periodPredict(lat,latErr)
+        print(f"Predicted Period: {period.round(3)} +/- {periodErr.round(3)}")
+        
+        # Printing the average latitude of the data
+        print(f"Average Latitude: {lat.round(3)} +/- {latErr.round(3)}")
         
         return slope, slopeErr
         
     def periodPredict(self, lat, latErr):
-        
+        # Uses a formula to calculate the expected 
         omega, A, B, C, phi = sy.symbols("omega A B C phi")
         omegaErr, AErr, BErr, CErr, phiErr = sy.symbols("omega_err A_err B_err C_err phi_err")
         
@@ -657,9 +677,10 @@ class measurement():
         
         return vals[omega], vals[omegaErr]
     
+    
 # measurement().initialise("ss_20250804-20250815", fit=[45.18443, 11.67832, 0])
-# measurement().initialise("ss_20250804-20250815", fit="sin")
+measurement().initialise("ss_20250804-20250815_sdo", fit="lin", verbose=False)
+# measurement().initialise("ss_20240202-20240211", fit="lin")
 
 # imageProcessing().sdoData("20250803-20250816")
 # imageProcessing().imageSequence("2025-08-02-00")
-measurement().initialise("ss_20240202-20240211", fit="sin")
